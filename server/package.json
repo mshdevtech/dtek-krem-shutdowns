@@ -1,0 +1,23 @@
+{
+  "name": "dtek-krem-shutdowns-server",
+  "version": "1.0.0",
+  "private": true,
+
+  "type": "module",
+  "main": "server.js",
+
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "postinstall": "npx playwright install chromium --with-deps"
+  },
+
+  "dependencies": {
+    "@upstash/redis": "^1.36.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.6.1",
+    "express": "^5.2.1",
+    "playwright": "^1.57.0",
+    "telegraf": "^4.16.3"
+  }
+}

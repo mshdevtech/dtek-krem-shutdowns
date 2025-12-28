@@ -1,0 +1,84 @@
+/* Вертикальні заголовки годин */
+.dtek-fact thead th,
+.dtek-week thead th {
+    writing-mode: vertical-rl;
+    -webkit-writing-mode: vertical-rl;
+    -ms-writing-mode: tb-rl;
+
+    transform: rotate(180deg); /* щоб читалось зверху вниз */
+    white-space: nowrap;
+
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1;
+    margin: 0 auto;
+}
+
+/* Вирівнюємо сам th */
+.dtek-fact thead th,
+.dtek-week thead th {
+    vertical-align: bottom;
+    text-align: center;
+    padding: 4px 2px !important;
+    min-width: 28px;
+}
+
+/* НЕ чіпаємо перші 2 колонки (підписи) */
+.dtek-fact thead th[colspan="2"],
+.dtek-week thead th[colspan="2"] {
+    writing-mode: horizontal-tb;
+    transform: none;
+}
+
+.dtek-week tbody td[colspan="2"] {
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.dtek-week td.current-day {
+    background-color: rgb(255 193 7);
+}
+
+    /* робимо клітинки схожими на “bootstrap” */
+.dtek-fact td,
+.dtek-week td {
+    height: 22px;
+    border-color: rgba(0,0,0,0.08) !important;
+}
+
+/* кольори станів (акуратно, без кислотності) */
+.cell-non-scheduled { background: #eaf7ea !important; }
+.cell-scheduled { background: #fdeaea !important; }
+.cell-scheduled-maybe { background: #eeeeee !important; }
+
+.cell-first-half {
+    background: linear-gradient(90deg, #fdeaea 50%, #eaf7ea 50%) !important;
+}
+
+.cell-second-half {
+    background: linear-gradient(90deg, #eaf7ea 50%, #fdeaea 50%) !important;
+}
+
+.dtek-week .cell-first-half  {
+    background: linear-gradient(90deg, #eeeeee 50%, #eaf7ea 50%) !important;
+}
+
+.dtek-week .cell-second-half {
+    background: linear-gradient(90deg, #eaf7ea 50%, #eeeeee 50%) !important;
+}
+
+/* липка перша колонка */
+.sticky-left {
+    position: sticky;
+    left: 0;
+    text-align: left !important;
+    padding-left: 8px !important;
+    min-width: 140px !important;
+    border-right: 1px solid rgba(0,0,0,0.12) !important;
+}
+
+/* щоб таблиця не роздувалась */
+.dtek-fact .table-responsive,
+.dtek-week .table-responsive {
+    overflow: auto;
+}
