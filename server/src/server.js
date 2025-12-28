@@ -227,7 +227,7 @@ async function readWeekSchedule(page) {
 }
 
 
-app.get("/api/status", async (_req, res) => {
+app.get("/api/status", async (req, res) => {
     let browser;
     try {
         const city = String(req.query.city ?? process.env.CITY ?? "").trim();
