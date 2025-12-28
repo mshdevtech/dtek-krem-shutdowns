@@ -477,12 +477,13 @@ app.get("/api/status", async (req, res) => {
         const data = await fetchStatusWithTables({ city, street, house });
         res.json(data);
     } catch (e) {
-        res.status(500).json({ error: String(e?.stack || e) });
+        console.error("/api/status error", e);
+        res.status(500).json({ error: String(e?.message || e) });
     }
 });
 
 // ======================
-// 🔁 CRON health endpoint (step 1)
+// 🔁 CRON health endpoint
 // ======================
 app.post("/api/cron/ping", (req, res) => {
     const secret = req.header("x-cron-secret");
@@ -493,7 +494,7 @@ app.post("/api/cron/ping", (req, res) => {
 });
 
 // ======================
-// 🔁 CRON check endpoint (step 1: no Telegram notify yet)
+// 🔁 CRON check endpoint
 // ======================
 app.post("/api/cron/check", async (req, res) => {
     try {
@@ -563,9 +564,10 @@ app.post("/api/cron/check", async (req, res) => {
             `[CRON] done total=${total} checked=${checked} updated=${updated} errors=${errors}`
         );
 
-        res.json({ ok: true, total, checked, updated, errors, ts: new Date().toISOString() });
+        res.status(200).json({ ok: true, total, checked, updated, errors });
     } catch (e) {
-        res.status(500).json({ error: String(e?.stack || e) });
+        console.error("/api/cron/check fatal", e);
+        res.status(500).json({ ok: false, error: String(e?.message || e).slice(0, 200) });
     }
 });
 
@@ -653,7 +655,7 @@ if (bot) {
             "• /status — статус світла\n" +
             "• /info — налаштування та останні зміни\n" +
             "• /setup — змінити адресу\n\n" +
-            "Авто-сповіщення працюють, якщо увімкнений cron."
+            "Авто-сповіщення працюють у фоні, я повідомлю, якщо статус зміниться."
         );
     });
 
@@ -686,6 +688,7 @@ if (bot) {
                 };
 
                 nextUser.lastCheckedAt = nowIso;
+                await saveUser(id, nextUser);
             }
             // 🔴 Якщо ще не було перевірки — робимо реальний запит
             else {
@@ -737,8 +740,8 @@ if (bot) {
             u.city ? `📍 ${u.city}, ${u.street}, ${u.house}` : null,
             u.groupName ? `Черга: ${u.groupName}` : null,
             u.lastStatus ? `Статус: ${u.lastStatus}` : null,
-            u.lastCheckedAt ? `Остання перевірка: ${u.lastCheckedAt}` : null,
-            u.lastStatusChangedAt ? `Остання зміна: ${u.lastStatusChangedAt}` : null,
+            u.lastCheckedAt ? `Остання перевірка: ${fmtDateTime(u.lastCheckedAt)}` : null,
+            u.lastStatusChangedAt ? `Остання зміна: ${fmtDateTime(u.lastStatusChangedAt)}` : null,
         ].filter(Boolean);
 
         await ctx.reply(lines.join("\n"));
