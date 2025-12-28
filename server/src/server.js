@@ -47,7 +47,6 @@ async function closeModal(page) {
         const btn = page.locator('[data-micromodal-close]').first();
         await btn.waitFor({ state: "visible", timeout: 5000 });
         await btn.click();
-        await page.waitForTimeout(200);
     } catch {}
 
     // 2) Якщо overlay ще є — прибрати його з DOM (fallback)
@@ -61,7 +60,7 @@ async function closeModal(page) {
 }
 
 
-async function fillAutocomplete(page, inputSelector, value, { delayMs = 400 } = {}) {
+async function fillAutocomplete(page, inputSelector, value) {
     const field = page.locator(inputSelector).first();
     await field.waitFor({ state: "visible", timeout: 20000 });
 
@@ -77,15 +76,25 @@ async function fillAutocomplete(page, inputSelector, value, { delayMs = 400 } = 
     await page.keyboard.press("Backspace");
     await field.type(value, { delay: 40 });
 
-    // чекати, поки зʼявиться список
-    await page.waitForTimeout(delayMs);
+    // чекати, поки зʼявиться список (без sleep)
+    const list = page.locator(listSelector);
+    await list.waitFor({ state: "visible", timeout: 10000 });
 
     const firstItem = page.locator(firstItemSelector).first();
     await firstItem.waitFor({ state: "visible", timeout: 10000 });
 
     // клік по першій опції (вона вставляє значення в інпут)
     await firstItem.click();
-    await page.waitForTimeout(150);
+
+    // дочекатися, поки інпут реально заповниться
+    await page.waitForFunction(
+        (sel) => {
+            const el = document.querySelector(sel);
+            return el && (el.value || "").trim().length >= 2;
+        },
+        inputSelector,
+        { timeout: 5000 }
+    );
 
     const finalValue = (await field.inputValue()).trim();
     if (!finalValue || finalValue.length < 2) {
@@ -252,7 +261,6 @@ function formatStatusMessage({ data, user }) {
         const page = await browser.newPage();
 
         await page.goto(DTEK_URL, { waitUntil: "domcontentloaded", timeout: 45000 });
-        await page.waitForTimeout(300);
 
         await closeModal(page);
 
@@ -264,7 +272,6 @@ function formatStatusMessage({ data, user }) {
 
         // Wait for results
         await page.locator("#showCurOutage").waitFor({ state: "visible", timeout: 20000 });
-        await page.waitForTimeout(700);
 
         const current = await readCurrentOutage(page);
         const groupName = await readGroupName(page);
