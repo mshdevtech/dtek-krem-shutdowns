@@ -3,7 +3,7 @@ import express from "express";
 import cors from "cors";
 import { chromium } from "playwright";
 import { Redis } from "@upstash/redis";
-import { Telegraf } from "telegraf";
+import { Telegraf, Scenes, session } from "telegraf";
 
 const app = express();
 app.use(cors());
@@ -16,6 +16,7 @@ const STREET = process.env.STREET;
 const HOUSE = process.env.HOUSE;
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL;
+const FRONTEND_URL = process.env.FRONTEND_URL;
 const bot = BOT_TOKEN ? new Telegraf(BOT_TOKEN) : null;
 
 // ======================
@@ -178,6 +179,66 @@ async function readScheduleUpdatedAt(page) {
 // 2️⃣ PLAYWRIGHT: one function for API + cron
 // ======================
 async function fetchStatusWithTables({ city, street, house }) {
+// ======================
+// 3️⃣ Telegram formatting helpers
+// ======================
+function fmtDateTime(isoOrNull) {
+    if (!isoOrNull) return null;
+    const d = new Date(isoOrNull);
+    if (Number.isNaN(d.getTime())) return null;
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function msToHuman(ms) {
+    if (!ms || ms < 0) return null;
+    const totalMin = Math.floor(ms / 60000);
+    const h = Math.floor(totalMin / 60);
+    const m = totalMin % 60;
+    if (h <= 0) return `${m} хв`;
+    if (m <= 0) return `${h} год`;
+    return `${h} год ${m} хв`;
+}
+
+function buildFrontendLink({ city, street, house }) {
+    if (!FRONTEND_URL) return null;
+    const u = new URL(FRONTEND_URL);
+    u.searchParams.set("city", city);
+    u.searchParams.set("street", street);
+    u.searchParams.set("house", house);
+    return u.toString();
+}
+
+function formatStatusMessage({ data, user }) {
+    const status = data?.current?.status ?? "UNKNOWN";
+    const head =
+        status === "OFF" ? "❌ Немає світла" :
+        status === "ON" ? "✅ Світло є" :
+        "❔ Статус невідомий";
+
+    const changedAt = fmtDateTime(user?.lastStatusChangedAt);
+
+    const sinceIso = status === "ON" ? user?.lastOnAt : user?.lastOffAt;
+    const sinceHuman = sinceIso ? msToHuman(Date.now() - new Date(sinceIso).getTime()) : null;
+
+    const addr = data?.resolvedAddress?.text || [user?.city, user?.street, user?.house].filter(Boolean).join(", ");
+    const group = data?.groupName ?? user?.groupName ?? null;
+    const link = buildFrontendLink({ city: user.city, street: user.street, house: user.house });
+
+    const lines = [
+        head,
+        addr ? `📍 ${addr}` : null,
+        group ? `Черга: ${group}` : null,
+        changedAt ? `Остання зміна: ${changedAt}` : null,
+        sinceHuman ? `Триває: ${sinceHuman}` : null,
+        data?.current?.reason ? `Причина: ${data.current.reason}` : null,
+        data?.current?.restore ? `Відновлення: ${data.current.restore}` : null,
+        data?.current?.updatedAt ? `Оновлено: ${data.current.updatedAt}` : null,
+        link ? `Детальніше: ${link}` : null,
+    ].filter(Boolean);
+
+    return lines.join("\n");
+}
     const c = String(city ?? "").trim();
     const s = String(street ?? "").trim();
     const h = String(house ?? "").trim();
@@ -406,13 +467,20 @@ app.post("/api/cron/check", async (req, res) => {
 
                 checked++;
 
+                const nowIso = new Date().toISOString();
+                const changed = prevStatus !== newStatus;
+
                 await saveUser(id, {
                     ...u,
+                    groupName: data?.groupName ?? u?.groupName ?? null,
                     lastStatus: newStatus,
-                    lastCheckedAt: new Date().toISOString(),
+                    lastCheckedAt: nowIso,
+                    ...(changed ? { lastStatusChangedAt: nowIso } : {}),
+                    ...(changed && newStatus === "ON" ? { lastOnAt: nowIso } : {}),
+                    ...(changed && newStatus === "OFF" ? { lastOffAt: nowIso } : {}),
                 });
 
-                if (prevStatus !== newStatus) updated++;
+                if (changed) updated++;
             } catch (e) {
                 errors++;
                 console.error("cron/check user error", id, e);
@@ -429,42 +497,107 @@ app.post("/api/cron/check", async (req, res) => {
 // 🤖 Telegram bot (webhook)
 // ======================
 if (bot) {
+    // Step-by-step setup wizard
+    const setupWizard = new Scenes.WizardScene(
+        "setup-wizard",
+        async (ctx) => {
+            ctx.wizard.state.addr = {};
+            await ctx.reply("Введіть населений пункт (місто/село) українською:");
+            return ctx.wizard.next();
+        },
+        async (ctx) => {
+            const city = String(ctx.message?.text ?? "").trim();
+            if (city.length < 2) {
+                await ctx.reply("Будь ласка, введіть населений пункт ще раз:");
+                return;
+            }
+            ctx.wizard.state.addr.city = city;
+            await ctx.reply("Введіть вулицю українською:");
+            return ctx.wizard.next();
+        },
+        async (ctx) => {
+            const street = String(ctx.message?.text ?? "").trim();
+            if (street.length < 2) {
+                await ctx.reply("Будь ласка, введіть вулицю ще раз:");
+                return;
+            }
+            ctx.wizard.state.addr.street = street;
+            await ctx.reply("Введіть номер будинку (наприклад: 12 або 12А або 2в):");
+            return ctx.wizard.next();
+        },
+        async (ctx) => {
+            const house = String(ctx.message?.text ?? "").trim();
+            if (house.length < 1) {
+                await ctx.reply("Будь ласка, введіть номер будинку ще раз:");
+                return;
+            }
+
+            const { city, street } = ctx.wizard.state.addr;
+            const id = String(ctx.chat.id);
+
+            await saveUser(id, {
+                city,
+                street,
+                house,
+                groupName: null,
+                lastStatus: null,
+                lastStatusChangedAt: null,
+                lastOnAt: null,
+                lastOffAt: null,
+                lastCheckedAt: null,
+                createdAt: new Date().toISOString(),
+            });
+
+            await ctx.reply(`✅ Адресу збережено:\n${city}, ${street}, ${house}\n\nТепер /status`);
+            return ctx.scene.leave();
+        }
+    );
+
+    const stage = new Scenes.Stage([setupWizard]);
+    bot.use(session());
+    bot.use(stage.middleware());
+
     bot.start(async (ctx) => {
         await ctx.reply(
             "Привіт!\n\n" +
-            "Задай адресу:\n" +
-            "/set Місто | Вулиця | Будинок\n\n" +
-            "Перевір:\n" +
-            "/status"
+            "Налаштуй адресу командою /setup\n" +
+            "Перевір статус: /status"
         );
     });
 
-    bot.command("set", async (ctx) => {
-        const text = ctx.message?.text?.replace(/^\/set\s*/i, "").trim();
-        const parts = (text || "").split("|").map(s => s.trim()).filter(Boolean);
-        if (parts.length < 3) return ctx.reply("Формат:\n/set Місто | Вулиця | Будинок");
+    bot.command("setup", async (ctx) => ctx.scene.enter("setup-wizard"));
 
-        const [city, street, house] = parts;
-
-        await saveUser(String(ctx.chat.id), {
-            city, street, house,
-            lastStatus: null,
-            createdAt: new Date().toISOString(),
-        });
-
-        await ctx.reply(`✅ Збережено:\n${city}, ${street}, ${house}\n\nТепер /status`);
-    });
+    // Backward compatible: /set starts wizard too
+    bot.command("set", async (ctx) => ctx.scene.enter("setup-wizard"));
 
     bot.command("status", async (ctx) => {
         const id = String(ctx.chat.id);
         const u = await getUser(id);
         if (!u?.city || !u?.street || !u?.house) {
-            return ctx.reply("Спочатку задай адресу: /set Місто | Вулиця | Будинок");
+            return ctx.reply("Спочатку налаштуй адресу: /setup");
         }
 
-        const data = await fetchStatusWithTables(u);
-        await ctx.reply(data.current?.text || "Немає даних");
-        await saveUser(id, { ...u, lastStatus: data?.current?.status ?? "UNKNOWN", lastCheckedAt: new Date().toISOString() });
+        const data = await fetchStatusWithTables({ city: u.city, street: u.street, house: u.house });
+
+        const newStatus = data?.current?.status ?? "UNKNOWN";
+        const prevStatus = u?.lastStatus ?? null;
+        const nowIso = new Date().toISOString();
+        const changed = prevStatus !== newStatus;
+
+        const nextUser = {
+            ...u,
+            groupName: data?.groupName ?? u?.groupName ?? null,
+            lastCheckedAt: nowIso,
+            lastStatus: newStatus,
+            ...(changed ? { lastStatusChangedAt: nowIso } : {}),
+            ...(changed && newStatus === "ON" ? { lastOnAt: nowIso } : {}),
+            ...(changed && newStatus === "OFF" ? { lastOffAt: nowIso } : {}),
+        };
+
+        await saveUser(id, nextUser);
+
+        const msg = formatStatusMessage({ data, user: nextUser });
+        await ctx.reply(msg);
     });
 }
 
