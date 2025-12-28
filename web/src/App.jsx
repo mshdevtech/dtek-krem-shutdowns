@@ -1,6 +1,16 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Container, Button, Card, Badge, Alert, Spinner } from "react-bootstrap";
 import {beautifyDtekHtml} from "./utils/beautifyDtekHtml.js";
+
+function getAddressFromUrl() {
+    const p = new URLSearchParams(window.location.search);
+    const city = (p.get("city") || "").trim();
+    const street = (p.get("street") || "").trim();
+    const house = (p.get("house") || "").trim();
+    const hasAll = Boolean(city && street && house);
+    const text = hasAll ? `${city}, ${street}, ${house}` : "";
+    return { city, street, house, hasAll, text };
+}
 
 function StatusBadge({ status }) {
     const map = {
@@ -17,11 +27,22 @@ export default function App() {
     const [loading, setLoading] = useState(false);
     const [err, setErr] = useState("");
 
+    const addr = getAddressFromUrl();
+
     const check = async () => {
         setLoading(true);
         setErr("");
         try {
-            const r = await fetch("http://localhost:3001/api/status");
+            const a = getAddressFromUrl();
+            const url = a.hasAll
+                ? `http://localhost:3001/api/status?${new URLSearchParams({
+                    city: a.city,
+                    street: a.street,
+                    house: a.house,
+                }).toString()}`
+                : "http://localhost:3001/api/status";
+
+            const r = await fetch(url);
             const j = await r.json();
             if (!r.ok) throw new Error(j?.error || "API error");
             setData(j);
@@ -32,13 +53,18 @@ export default function App() {
         }
     };
 
+    useEffect(() => {
+        if (addr.hasAll) {
+            check();
+        }
+    }, []);
+
     const currentStatus = data?.current?.status ?? "UNKNOWN";
 
     return (
         <Container className="py-4">
             <div className="d-flex align-items-center justify-content-between gap-2">
-                <h2 className="m-0">Перевірка світла</h2>
-
+                <h2 className="m-0">Перевірка світла {addr.hasAll && <span style={{ fontSize: "1.2rem" }}>для <em className="headerAddress">"{addr.text}"</em></span>}</h2>
                 <Button onClick={check} disabled={loading}>
                     {loading ? (
                         <>

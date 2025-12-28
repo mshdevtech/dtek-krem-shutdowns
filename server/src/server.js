@@ -265,9 +265,9 @@ app.get("/api/status", async (req, res) => {
 
         await closeModal(page);
 
-        await fillAutocomplete(page, "#discon_form #city", CITY);
-        await fillAutocomplete(page, "#discon_form #street", STREET);
-        await fillAutocomplete(page, "#discon_form #house_num", HOUSE);
+        await fillAutocomplete(page, "#discon_form #city", city);
+        await fillAutocomplete(page, "#discon_form #street", street);
+        await fillAutocomplete(page, "#discon_form #house_num", house);
 
         const resolvedAddress = await readResolvedAddress(page);
 
