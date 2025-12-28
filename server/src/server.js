@@ -2,6 +2,8 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import { chromium } from "playwright";
+import { Redis } from "@upstash/redis";
+import { Telegraf } from "telegraf";
 
 const app = express();
 app.use(cors());
@@ -12,6 +14,26 @@ const DTEK_URL = process.env.DTEK_URL;
 const CITY = process.env.CITY;
 const STREET = process.env.STREET;
 const HOUSE = process.env.HOUSE;
+const BOT_TOKEN = process.env.BOT_TOKEN;
+const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL;
+const bot = BOT_TOKEN ? new Telegraf(BOT_TOKEN) : null;
+
+// ======================
+// 🧠 Redis (Upstash)
+// ======================
+const redis = Redis.fromEnv();
+const USERS_SET = "users";
+const userKey = (chatId) => `user:${chatId}`;
+
+async function getUser(chatId) {
+    const data = await redis.get(userKey(chatId));
+    return data ?? null;
+}
+
+async function saveUser(chatId, data) {
+    await redis.set(userKey(chatId), data);
+    await redis.sadd(USERS_SET, String(chatId));
+}
 
 // ======================
 // 1️⃣ ДОПОМІЖНІ ФУНКЦІЇ
@@ -152,6 +174,85 @@ async function readScheduleUpdatedAt(page) {
     return null;
 }
 
+// ======================
+// 2️⃣ PLAYWRIGHT: one function for API + cron
+// ======================
+async function fetchStatusWithTables({ city, street, house }) {
+    const c = String(city ?? "").trim();
+    const s = String(street ?? "").trim();
+    const h = String(house ?? "").trim();
+
+    if (!DTEK_URL) throw new Error("DTEK_URL is not set");
+    if (!c || !s || !h) throw new Error("Missing address: city, street, house");
+
+    let browser;
+    try {
+        browser = await chromium.launch({ headless: true });
+        const page = await browser.newPage();
+
+        await page.goto(DTEK_URL, { waitUntil: "domcontentloaded", timeout: 45000 });
+        await page.waitForTimeout(300);
+
+        await closeModal(page);
+
+        await fillAutocomplete(page, "#discon_form #city", c);
+        await fillAutocomplete(page, "#discon_form #street", s);
+        await fillAutocomplete(page, "#discon_form #house_num", h);
+
+        const resolvedAddress = await readResolvedAddress(page);
+
+        // Wait for results
+        await page.locator("#showCurOutage").waitFor({ state: "visible", timeout: 20000 });
+        await page.waitForTimeout(700);
+
+        const current = await readCurrentOutage(page);
+        const groupName = await readGroupName(page);
+        const scheduleUpdatedAt = await readScheduleUpdatedAt(page);
+
+        // day графік (залишаємо як було)
+        let day = { todayRel: null, tomorrowRel: null, today: null, tomorrow: null };
+        try {
+            const { todayRel, tomorrowRel } = await readTodayTomorrowRel(page);
+            day.todayRel = todayRel || null;
+            day.tomorrowRel = tomorrowRel || null;
+
+            if (day.todayRel) day.today = await readDayScheduleByRel(page, day.todayRel);
+            if (day.tomorrowRel) day.tomorrow = await readDayScheduleByRel(page, day.tomorrowRel);
+        } catch {
+            // ok
+        }
+
+        // 👉 БЕРЕМО HTML ТАБЛИЦЬ ЯК Є
+        const base = new URL(DTEK_URL).origin;
+        const fix = (html) =>
+            html
+                ?.replaceAll('src="/', `src="${base}/`)
+                .replaceAll('href="/', `href="${base}/`);
+
+        const factHtml = await page
+            .locator("#discon-fact .discon-fact-table.active table")
+            .evaluate((el) => el.outerHTML)
+            .catch(() => null);
+
+        const weekHtml = await page
+            .locator(".discon-schedule-table #tableRenderElem table")
+            .evaluate((el) => el.outerHTML)
+            .catch(() => null);
+
+        return {
+            current,
+            groupName,
+            scheduleUpdatedAt,
+            day,
+            factHtml: fix(factHtml),
+            weekHtml: fix(weekHtml),
+            resolvedAddress,
+        };
+    } finally {
+        if (browser) await browser.close().catch(() => {});
+    }
+}
+
 async function readDaySchedule(page, relUnix) {
     const table = page.locator(`#discon-fact .discon-fact-table[rel="${relUnix}"] table tbody tr`);
     await table.first().waitFor({ state: "attached", timeout: 20000 });
@@ -242,88 +343,21 @@ async function readWeekSchedule(page) {
 
 
 app.get("/api/status", async (req, res) => {
-    let browser;
     try {
-        const city = String(req.query.city ?? process.env.CITY ?? "").trim();
-        const street = String(req.query.street ?? process.env.STREET ?? "").trim();
-        const house = String(req.query.house ?? process.env.HOUSE ?? "").trim();
-
-        if (!DTEK_URL) return res.status(500).json({ error: "DTEK_URL is not set" });
+        const city = String(req.query.city ?? CITY ?? "").trim();
+        const street = String(req.query.street ?? STREET ?? "").trim();
+        const house = String(req.query.house ?? HOUSE ?? "").trim();
 
         if (!city || !street || !house) {
             return res.status(400).json({
-                error: "Передай city, street, house. Напр: /api/status?city=...&street=...&house=..."
+                error: "Передай city, street, house. Напр: /api/status?city=...&street=...&house=... (або задай CITY/STREET/HOUSE в .env)"
             });
         }
 
-        browser = await chromium.launch({ headless: true });
-
-        const page = await browser.newPage();
-        await page.goto(DTEK_URL, { waitUntil: "domcontentloaded", timeout: 45000 });
-
-        await page.waitForTimeout(300);
-
-        await closeModal(page);
-
-        await fillAutocomplete(page, "#discon_form #city", city);
-        await fillAutocomplete(page, "#discon_form #street", street);
-        await fillAutocomplete(page, "#discon_form #house_num", house);
-
-        const resolvedAddress = await readResolvedAddress(page);
-
-        // Wait for results
-        await page.locator("#showCurOutage").waitFor({ state: "visible", timeout: 20000 });
-        await page.waitForTimeout(700);
-
-        const current = await readCurrentOutage(page);
-        const groupName = await readGroupName(page);
-        const scheduleUpdatedAt = await readScheduleUpdatedAt(page);
-
-        // day графік
-        let day = { todayRel: null, tomorrowRel: null, today: null, tomorrow: null };
-        try {
-            // якщо блок активний — супер, але не прив’язуємось жорстко
-            const { todayRel, tomorrowRel } = await readTodayTomorrowRel(page);
-            day.todayRel = todayRel || null;
-            day.tomorrowRel = tomorrowRel || null;
-
-            if (day.todayRel) day.today = await readDayScheduleByRel(page, day.todayRel);
-            if (day.tomorrowRel) day.tomorrow = await readDayScheduleByRel(page, day.tomorrowRel);
-        } catch {
-            // залишиться null — ок
-        }
-
-        // week графік або note
-        // 👉 БЕРЕМО HTML ТАБЛИЦЬ ЯК Є
-        const base = new URL(DTEK_URL).origin;
-        const fix = (html) =>
-            html
-                ?.replaceAll('src="/', `src="${base}/`)
-                .replaceAll('href="/', `href="${base}/`);
-
-        const factHtml = await page
-            .locator("#discon-fact .discon-fact-table.active table")
-            .evaluate(el => el.outerHTML)
-            .catch(() => null);
-
-        const weekHtml = await page
-            .locator(".discon-schedule-table table")
-            .evaluate(el => el.outerHTML)
-            .catch(() => null);
-
-        res.json({
-            current,
-            groupName,
-            scheduleUpdatedAt,
-            day,
-            factHtml: fix(factHtml),
-            weekHtml: fix(weekHtml),
-            resolvedAddress,
-        });
+        const data = await fetchStatusWithTables({ city, street, house });
+        res.json(data);
     } catch (e) {
-        res.status(500).json({ error: String(e) });
-    } finally {
-        if (browser) await browser.close();
+        res.status(500).json({ error: String(e?.stack || e) });
     }
 });
 
@@ -391,7 +425,77 @@ app.post("/api/cron/check", async (req, res) => {
     }
 });
 
+// ======================
+// 🤖 Telegram bot (webhook)
+// ======================
+if (bot) {
+    bot.start(async (ctx) => {
+        await ctx.reply(
+            "Привіт!\n\n" +
+            "Задай адресу:\n" +
+            "/set Місто | Вулиця | Будинок\n\n" +
+            "Перевір:\n" +
+            "/status"
+        );
+    });
 
-app.listen(PORT, () => {
-    console.log(`API running: http://localhost:${PORT}`);
+    bot.command("set", async (ctx) => {
+        const text = ctx.message?.text?.replace(/^\/set\s*/i, "").trim();
+        const parts = (text || "").split("|").map(s => s.trim()).filter(Boolean);
+        if (parts.length < 3) return ctx.reply("Формат:\n/set Місто | Вулиця | Будинок");
+
+        const [city, street, house] = parts;
+
+        await saveUser(String(ctx.chat.id), {
+            city, street, house,
+            lastStatus: null,
+            createdAt: new Date().toISOString(),
+        });
+
+        await ctx.reply(`✅ Збережено:\n${city}, ${street}, ${house}\n\nТепер /status`);
+    });
+
+    bot.command("status", async (ctx) => {
+        const id = String(ctx.chat.id);
+        const u = await getUser(id);
+        if (!u?.city || !u?.street || !u?.house) {
+            return ctx.reply("Спочатку задай адресу: /set Місто | Вулиця | Будинок");
+        }
+
+        const data = await fetchStatusWithTables(u);
+        await ctx.reply(data.current?.text || "Немає даних");
+        await saveUser(id, { ...u, lastStatus: data?.current?.status ?? "UNKNOWN", lastCheckedAt: new Date().toISOString() });
+    });
+}
+
+// webhook receiver
+app.post("/api/tg/webhook", async (req, res) => {
+    try {
+        if (!bot) return res.sendStatus(503);
+        await bot.handleUpdate(req.body);
+    } catch (e) {
+        console.error("TG webhook error:", e);
+    }
+    res.sendStatus(200);
 });
+
+app.listen(PORT, async () => {
+    console.log(`API running: http://localhost:${PORT}`);
+
+    try {
+        if (bot && PUBLIC_BASE_URL) {
+            const url = `${PUBLIC_BASE_URL}/api/tg/webhook`;
+            await bot.telegram.setWebhook(url);
+            console.log("✅ Webhook set:", url);
+        } else if (!BOT_TOKEN) {
+            console.log("⚠️ BOT_TOKEN is not set — bot disabled");
+        } else if (!PUBLIC_BASE_URL) {
+            console.log("⚠️ PUBLIC_BASE_URL is not set — cannot set webhook");
+        }
+    } catch (e) {
+        console.error("❌ Failed to set webhook", e);
+    }
+});
+
+process.once("SIGINT", () => bot?.stop("SIGINT"));
+process.once("SIGTERM", () => bot?.stop("SIGTERM"));
