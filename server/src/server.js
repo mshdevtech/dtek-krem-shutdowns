@@ -118,6 +118,20 @@ async function readCurrentOutage(page) {
     };
 }
 
+async function readResolvedAddress(page) {
+    const city = (await page.locator("#discon_form #city").first().inputValue().catch(() => "")).trim();
+    const street = (await page.locator("#discon_form #street").first().inputValue().catch(() => "")).trim();
+    const house = (await page.locator("#discon_form #house_num").first().inputValue().catch(() => "")).trim();
+
+    const text = [city, street, house].filter(Boolean).join(", ");
+
+    return {
+        city: city || null,
+        street: street || null,
+        house: house || null,
+        text: text || null
+    };
+}
 
 async function readGroupName(page) {
     const el = page.locator("#group-name span");
@@ -255,6 +269,8 @@ app.get("/api/status", async (req, res) => {
         await fillAutocomplete(page, "#discon_form #street", STREET);
         await fillAutocomplete(page, "#discon_form #house_num", HOUSE);
 
+        const resolvedAddress = await readResolvedAddress(page);
+
         // Wait for results
         await page.locator("#showCurOutage").waitFor({ state: "visible", timeout: 20000 });
         await page.waitForTimeout(700);
@@ -302,6 +318,7 @@ app.get("/api/status", async (req, res) => {
             day,
             factHtml: fix(factHtml),
             weekHtml: fix(weekHtml),
+            resolvedAddress,
         });
     } catch (e) {
         res.status(500).json({ error: String(e) });

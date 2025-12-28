@@ -77,9 +77,15 @@ export default function App() {
                 </span>
                             )}
                         </div>
+                        {data?.resolvedAddress?.text && (
+                            <div style={{ marginTop: 8, fontSize: 14, opacity: 0.85 }}>
+                                📍 Адреса: <strong>{data.resolvedAddress.text}</strong>
+                            </div>
+                        )}
+
 
                         {data.current?.text && (
-                            <div className="mt-3" style={{ whiteSpace: "pre-wrap" }}>
+                            <div className="mt-2" style={{ whiteSpace: "pre-wrap" }}>
                                 {data.current.text}
                             </div>
                         )}
