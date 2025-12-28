@@ -497,6 +497,9 @@ app.post("/api/cron/ping", (req, res) => {
 // ======================
 app.post("/api/cron/check", async (req, res) => {
     try {
+        console.log(
+            `[CRON] start ${new Date().toISOString()}`
+        );
         const secret = req.header("x-cron-secret");
         if (!process.env.CRON_SECRET || secret !== process.env.CRON_SECRET) {
             return res.status(401).json({ error: "Unauthorized" });
@@ -555,6 +558,10 @@ app.post("/api/cron/check", async (req, res) => {
                 console.error("cron/check user error", id, e);
             }
         }
+
+        console.log(
+            `[CRON] done total=${total} checked=${checked} updated=${updated} errors=${errors}`
+        );
 
         res.json({ ok: true, total, checked, updated, errors, ts: new Date().toISOString() });
     } catch (e) {
@@ -627,10 +634,26 @@ if (bot) {
     bot.use(stage.middleware());
 
     bot.start(async (ctx) => {
+        const id = String(ctx.chat.id);
+        const u = await getUser(id);
+
+        if (!u?.city || !u?.street || !u?.house) {
+            return ctx.reply(
+                "Привіт! 👋\n\n" +
+                "1) Налаштуй адресу: /setup\n" +
+                "2) Потім перевір статус: /status\n\n" +
+                "Після налаштування я зможу автоматично сповіщати про зміни світла."
+            );
+        }
+
         await ctx.reply(
-            "Привіт!\n\n" +
-            "Налаштуй адресу командою /setup\n" +
-            "Перевір статус: /status"
+            "Привіт! 👋\n\n" +
+            `Твоя адреса: ${u.city}, ${u.street}, ${u.house}\n\n` +
+            "Команди:\n" +
+            "• /status — статус світла\n" +
+            "• /info — налаштування та останні зміни\n" +
+            "• /setup — змінити адресу\n\n" +
+            "Авто-сповіщення працюють, якщо увімкнений cron."
         );
     });
 
@@ -642,36 +665,83 @@ if (bot) {
     bot.command("status", async (ctx) => {
         const id = String(ctx.chat.id);
         const u = await getUser(id);
+
         if (!u?.city || !u?.street || !u?.house) {
             return ctx.reply("Спочатку налаштуй адресу: /setup");
         }
 
         try {
-            const data = await fetchStatusBasic({ city: u.city, street: u.street, house: u.house });
-
-            const newStatus = data?.current?.status ?? "UNKNOWN";
-            const prevStatus = u?.lastStatus ?? null;
+            let data;
+            let nextUser = { ...u };
             const nowIso = new Date().toISOString();
-            const changed = prevStatus !== newStatus;
 
-            const nextUser = {
-                ...u,
-                groupName: data?.groupName ?? u?.groupName ?? null,
-                lastCheckedAt: nowIso,
-                lastStatus: newStatus,
-                ...(changed ? { lastStatusChangedAt: nowIso } : {}),
-                ...(changed && newStatus === "ON" ? { lastOnAt: nowIso } : {}),
-                ...(changed && newStatus === "OFF" ? { lastOffAt: nowIso } : {}),
-            };
+            // 🟢 Якщо статус вже є — просто показуємо (швидко)
+            if (u.lastStatus) {
+                data = {
+                    current: { status: u.lastStatus },
+                    groupName: u.groupName,
+                    resolvedAddress: {
+                        text: `${u.city}, ${u.street}, ${u.house}`,
+                    },
+                };
 
-            await saveUser(id, nextUser);
+                nextUser.lastCheckedAt = nowIso;
+            }
+            // 🔴 Якщо ще не було перевірки — робимо реальний запит
+            else {
+                await ctx.reply("⏳ Перевіряю статус, зачекай 15–20 сек...");
+
+                data = await fetchStatusBasic({
+                    city: u.city,
+                    street: u.street,
+                    house: u.house,
+                });
+
+                const newStatus = data?.current?.status ?? "UNKNOWN";
+
+                nextUser = {
+                    ...u,
+                    groupName: data?.groupName ?? u.groupName ?? null,
+                    lastStatus: newStatus,
+                    lastCheckedAt: nowIso,
+                    lastStatusChangedAt: nowIso,
+                    ...(newStatus === "ON" ? { lastOnAt: nowIso } : {}),
+                    ...(newStatus === "OFF" ? { lastOffAt: nowIso } : {}),
+                };
+
+                await saveUser(id, nextUser);
+            }
 
             const msg = formatStatusMessage({ data, user: nextUser });
             await ctx.reply(msg);
+
         } catch (e) {
             console.error("/status error", e);
-            await ctx.reply("Не вдалось отримати статус з сайту ДТЕК. Спробуй ще раз через 1-2 хв.");
+            await ctx.reply(
+                "❌ Не вдалось отримати статус з сайту ДТЕК.\n" +
+                "Спробуй ще раз через 1–2 хв."
+            );
         }
+    });
+
+    bot.command("info", async (ctx) => {
+        const id = String(ctx.chat.id);
+        const u = await getUser(id);
+
+        if (!u) {
+            return ctx.reply("Користувач не знайдений. Використай /setup");
+        }
+
+        const lines = [
+            "ℹ️ Поточні налаштування:",
+            u.city ? `📍 ${u.city}, ${u.street}, ${u.house}` : null,
+            u.groupName ? `Черга: ${u.groupName}` : null,
+            u.lastStatus ? `Статус: ${u.lastStatus}` : null,
+            u.lastCheckedAt ? `Остання перевірка: ${u.lastCheckedAt}` : null,
+            u.lastStatusChangedAt ? `Остання зміна: ${u.lastStatusChangedAt}` : null,
+        ].filter(Boolean);
+
+        await ctx.reply(lines.join("\n"));
     });
 }
 
