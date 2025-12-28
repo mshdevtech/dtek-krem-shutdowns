@@ -327,6 +327,18 @@ app.get("/api/status", async (req, res) => {
     }
 });
 
+// ======================
+// 🔁 CRON health endpoint (step 1)
+// ======================
+app.post("/api/cron/ping", (req, res) => {
+    const secret = req.header("x-cron-secret");
+    if (!process.env.CRON_SECRET || secret !== process.env.CRON_SECRET) {
+        return res.status(401).json({ error: "Unauthorized" });
+    }
+    res.json({ ok: true, ts: new Date().toISOString() });
+});
+
+
 app.listen(PORT, () => {
     console.log(`API running: http://localhost:${PORT}`);
 });
