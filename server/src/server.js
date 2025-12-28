@@ -338,6 +338,59 @@ app.post("/api/cron/ping", (req, res) => {
     res.json({ ok: true, ts: new Date().toISOString() });
 });
 
+// ======================
+// 🔁 CRON check endpoint (step 1: no Telegram notify yet)
+// ======================
+app.post("/api/cron/check", async (req, res) => {
+    try {
+        const secret = req.header("x-cron-secret");
+        if (!process.env.CRON_SECRET || secret !== process.env.CRON_SECRET) {
+            return res.status(401).json({ error: "Unauthorized" });
+        }
+
+        const chatIds = await redis.smembers(USERS_SET);
+
+        let total = chatIds.length;
+        let checked = 0;
+        let updated = 0;
+        let errors = 0;
+
+        for (const chatId of chatIds) {
+            const id = String(chatId);
+            try {
+                const u = await getUser(id);
+                if (!u?.city || !u?.street || !u?.house) continue;
+
+                const data = await fetchStatusWithTables({
+                    city: u.city,
+                    street: u.street,
+                    house: u.house,
+                });
+
+                const newStatus = data?.current?.status ?? "UNKNOWN";
+                const prevStatus = u?.lastStatus ?? null;
+
+                checked++;
+
+                await saveUser(id, {
+                    ...u,
+                    lastStatus: newStatus,
+                    lastCheckedAt: new Date().toISOString(),
+                });
+
+                if (prevStatus !== newStatus) updated++;
+            } catch (e) {
+                errors++;
+                console.error("cron/check user error", id, e);
+            }
+        }
+
+        res.json({ ok: true, total, checked, updated, errors, ts: new Date().toISOString() });
+    } catch (e) {
+        res.status(500).json({ error: String(e?.stack || e) });
+    }
+});
+
 
 app.listen(PORT, () => {
     console.log(`API running: http://localhost:${PORT}`);
