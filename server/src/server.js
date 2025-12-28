@@ -185,13 +185,6 @@ async function readScheduleUpdatedAt(page) {
 }
 
 // ======================
-// 2️⃣ PLAYWRIGHT: one function for API + cron
-// ======================
-async function fetchStatusWithTables({ city, street, house }) {
-    const c = String(city ?? "").trim();
-    const s = String(street ?? "").trim();
-    const h = String(house ?? "").trim();
-// ======================
 // 3️⃣ Telegram formatting helpers
 // ======================
 function fmtDateTime(isoOrNull) {
@@ -199,7 +192,9 @@ function fmtDateTime(isoOrNull) {
     const d = new Date(isoOrNull);
     if (Number.isNaN(d.getTime())) return null;
     const pad = (n) => String(n).padStart(2, "0");
-    return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()} ${pad(
+        d.getHours()
+    )}:${pad(d.getMinutes())}`;
 }
 
 function msToHuman(ms) {
@@ -224,18 +219,27 @@ function buildFrontendLink({ city, street, house }) {
 function formatStatusMessage({ data, user }) {
     const status = data?.current?.status ?? "UNKNOWN";
     const head =
-        status === "OFF" ? "❌ Немає світла" :
-        status === "ON" ? "✅ Світло є" :
-        "❔ Статус невідомий";
+        status === "OFF"
+            ? "❌ Немає світла"
+            : status === "ON"
+                ? "✅ Світло є"
+                : "❔ Статус невідомий";
 
     const changedAt = fmtDateTime(user?.lastStatusChangedAt);
 
     const sinceIso = status === "ON" ? user?.lastOnAt : user?.lastOffAt;
-    const sinceHuman = sinceIso ? msToHuman(Date.now() - new Date(sinceIso).getTime()) : null;
+    const sinceHuman = sinceIso
+        ? msToHuman(Date.now() - new Date(sinceIso).getTime())
+        : null;
 
-    const addr = data?.resolvedAddress?.text || [user?.city, user?.street, user?.house].filter(Boolean).join(", ");
+    const addr =
+        data?.resolvedAddress?.text ||
+        [user?.city, user?.street, user?.house].filter(Boolean).join(", ");
     const group = data?.groupName ?? user?.groupName ?? null;
-    const link = buildFrontendLink({ city: user.city, street: user.street, house: user.house });
+    const link =
+        user?.city && user?.street && user?.house
+            ? buildFrontendLink({ city: user.city, street: user.street, house: user.house })
+            : null;
 
     const lines = [
         head,
@@ -251,6 +255,14 @@ function formatStatusMessage({ data, user }) {
 
     return lines.join("\n");
 }
+
+// ======================
+// 2️⃣ PLAYWRIGHT: one function for API + cron
+// ======================
+async function fetchStatusWithTables({ city, street, house }) {
+    const c = String(city ?? "").trim();
+    const s = String(street ?? "").trim();
+    const h = String(house ?? "").trim();
 
     if (!DTEK_URL) throw new Error("DTEK_URL is not set");
     if (!c || !s || !h) throw new Error("Missing address: city, street, house");
