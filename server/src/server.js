@@ -259,6 +259,46 @@ function formatStatusMessage({ data, user }) {
 // ======================
 // 2️⃣ PLAYWRIGHT: one function for API + cron
 // ======================
+async function fetchStatusBasic({ city, street, house }) {
+    const c = String(city ?? "").trim();
+    const s = String(street ?? "").trim();
+    const h = String(house ?? "").trim();
+
+    if (!DTEK_URL) throw new Error("DTEK_URL is not set");
+    if (!c || !s || !h) throw new Error("Missing address: city, street, house");
+
+    let browser;
+    try {
+        browser = await chromium.launch({ headless: true });
+        const page = await browser.newPage();
+
+        await page.goto(DTEK_URL, { waitUntil: "domcontentloaded", timeout: 45000 });
+        await closeModal(page);
+
+        await fillAutocomplete(page, "#discon_form #city", c);
+        await fillAutocomplete(page, "#discon_form #street", s);
+        await fillAutocomplete(page, "#discon_form #house_num", h);
+
+        const resolvedAddress = await readResolvedAddress(page);
+
+        // Wait for results
+        await page.locator("#showCurOutage").waitFor({ state: "visible", timeout: 20000 });
+
+        const current = await readCurrentOutage(page);
+        const groupName = await readGroupName(page);
+        const scheduleUpdatedAt = await readScheduleUpdatedAt(page);
+
+        return {
+            current,
+            groupName,
+            scheduleUpdatedAt,
+            resolvedAddress,
+        };
+    } finally {
+        if (browser) await browser.close().catch(() => {});
+    }
+}
+
 async function fetchStatusWithTables({ city, street, house }) {
     const c = String(city ?? "").trim();
     const s = String(street ?? "").trim();
@@ -475,7 +515,7 @@ app.post("/api/cron/check", async (req, res) => {
                 const u = await getUser(id);
                 if (!u?.city || !u?.street || !u?.house) continue;
 
-                const data = await fetchStatusWithTables({
+                const data = await fetchStatusBasic({
                     city: u.city,
                     street: u.street,
                     house: u.house,
@@ -489,7 +529,7 @@ app.post("/api/cron/check", async (req, res) => {
                 const nowIso = new Date().toISOString();
                 const changed = prevStatus !== newStatus;
 
-                await saveUser(id, {
+                const nextUser = {
                     ...u,
                     groupName: data?.groupName ?? u?.groupName ?? null,
                     lastStatus: newStatus,
@@ -497,9 +537,19 @@ app.post("/api/cron/check", async (req, res) => {
                     ...(changed ? { lastStatusChangedAt: nowIso } : {}),
                     ...(changed && newStatus === "ON" ? { lastOnAt: nowIso } : {}),
                     ...(changed && newStatus === "OFF" ? { lastOffAt: nowIso } : {}),
-                });
+                };
 
-                if (changed) updated++;
+                await saveUser(id, nextUser);
+
+                if (changed) {
+                    updated++;
+
+                    // Не спамимо, якщо статус невідомий
+                    if (bot && newStatus !== "UNKNOWN") {
+                        const msg = formatStatusMessage({ data, user: nextUser });
+                        await bot.telegram.sendMessage(id, msg);
+                    }
+                }
             } catch (e) {
                 errors++;
                 console.error("cron/check user error", id, e);
@@ -597,7 +647,7 @@ if (bot) {
         }
 
         try {
-            const data = await fetchStatusWithTables({ city: u.city, street: u.street, house: u.house });
+            const data = await fetchStatusBasic({ city: u.city, street: u.street, house: u.house });
 
             const newStatus = data?.current?.status ?? "UNKNOWN";
             const prevStatus = u?.lastStatus ?? null;
