@@ -188,6 +188,9 @@ async function readScheduleUpdatedAt(page) {
 // 2️⃣ PLAYWRIGHT: one function for API + cron
 // ======================
 async function fetchStatusWithTables({ city, street, house }) {
+    const c = String(city ?? "").trim();
+    const s = String(street ?? "").trim();
+    const h = String(house ?? "").trim();
 // ======================
 // 3️⃣ Telegram formatting helpers
 // ======================
@@ -248,9 +251,6 @@ function formatStatusMessage({ data, user }) {
 
     return lines.join("\n");
 }
-    const c = String(city ?? "").trim();
-    const s = String(street ?? "").trim();
-    const h = String(house ?? "").trim();
 
     if (!DTEK_URL) throw new Error("DTEK_URL is not set");
     if (!c || !s || !h) throw new Error("Missing address: city, street, house");
@@ -584,27 +584,32 @@ if (bot) {
             return ctx.reply("Спочатку налаштуй адресу: /setup");
         }
 
-        const data = await fetchStatusWithTables({ city: u.city, street: u.street, house: u.house });
+        try {
+            const data = await fetchStatusWithTables({ city: u.city, street: u.street, house: u.house });
 
-        const newStatus = data?.current?.status ?? "UNKNOWN";
-        const prevStatus = u?.lastStatus ?? null;
-        const nowIso = new Date().toISOString();
-        const changed = prevStatus !== newStatus;
+            const newStatus = data?.current?.status ?? "UNKNOWN";
+            const prevStatus = u?.lastStatus ?? null;
+            const nowIso = new Date().toISOString();
+            const changed = prevStatus !== newStatus;
 
-        const nextUser = {
-            ...u,
-            groupName: data?.groupName ?? u?.groupName ?? null,
-            lastCheckedAt: nowIso,
-            lastStatus: newStatus,
-            ...(changed ? { lastStatusChangedAt: nowIso } : {}),
-            ...(changed && newStatus === "ON" ? { lastOnAt: nowIso } : {}),
-            ...(changed && newStatus === "OFF" ? { lastOffAt: nowIso } : {}),
-        };
+            const nextUser = {
+                ...u,
+                groupName: data?.groupName ?? u?.groupName ?? null,
+                lastCheckedAt: nowIso,
+                lastStatus: newStatus,
+                ...(changed ? { lastStatusChangedAt: nowIso } : {}),
+                ...(changed && newStatus === "ON" ? { lastOnAt: nowIso } : {}),
+                ...(changed && newStatus === "OFF" ? { lastOffAt: nowIso } : {}),
+            };
 
-        await saveUser(id, nextUser);
+            await saveUser(id, nextUser);
 
-        const msg = formatStatusMessage({ data, user: nextUser });
-        await ctx.reply(msg);
+            const msg = formatStatusMessage({ data, user: nextUser });
+            await ctx.reply(msg);
+        } catch (e) {
+            console.error("/status error", e);
+            await ctx.reply("Не вдалось отримати статус з сайту ДТЕК. Спробуй ще раз через 1-2 хв.");
+        }
     });
 }
 
