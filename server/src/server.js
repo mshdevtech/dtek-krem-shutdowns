@@ -505,6 +505,14 @@ app.post("/api/cron/check", async (req, res) => {
         return res.status(401).json({ error: "Unauthorized" });
     }
 
+    // 🔒 CRON lock (prevent parallel runs)
+    const lockKey = "cron:lock";
+    const gotLock = await redis.set(lockKey, "1", { nx: true, ex: 180 }); // 3 хв TTL
+    if (!gotLock) {
+        console.log("[CRON] skipped: locked");
+        return res.status(200).json({ ok: true, skipped: true, reason: "locked" });
+    }
+
     let browser;
     try {
         console.log(
@@ -575,6 +583,7 @@ app.post("/api/cron/check", async (req, res) => {
         console.error("/api/cron/check fatal", e);
         res.status(500).json({ ok: false, error: String(e?.message || e).slice(0, 200) });
     } finally {
+        try { await redis.del("cron:lock"); } catch {}
         if (browser) await browser.close().catch(() => {});
     }
 });
