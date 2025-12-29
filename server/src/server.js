@@ -513,79 +513,79 @@ app.post("/api/cron/check", async (req, res) => {
         return res.status(200).json({ ok: true, skipped: true, reason: "locked" });
     }
 
-    let browser;
-    try {
-        console.log(
-            `[CRON] start ${new Date().toISOString()}`
-        );
-        browser = await chromium.launch({ headless: true });
+    // respond immediately so external callers don't time out
+    res.status(202).json({ ok: true, accepted: true });
 
-        const chatIds = await redis.smembers(USERS_SET);
+    // continue work in background
+    setImmediate(async () => {
+        let browser;
+        try {
+            console.log(`[CRON] start ${new Date().toISOString()}`);
+            browser = await chromium.launch({ headless: true });
 
-        let total = chatIds.length;
-        let checked = 0;
-        let updated = 0;
-        let errors = 0;
+            const chatIds = await redis.smembers(USERS_SET);
 
-        for (const chatId of chatIds) {
-            const id = String(chatId);
-            try {
-                const u = await getUser(id);
-                if (!u?.city || !u?.street || !u?.house) continue;
+            let total = chatIds.length;
+            let checked = 0;
+            let updated = 0;
+            let errors = 0;
 
-                const data = await fetchStatusBasic(browser, {
-                    city: u.city,
-                    street: u.street,
-                    house: u.house,
-                });
+            for (const chatId of chatIds) {
+                const id = String(chatId);
+                try {
+                    const u = await getUser(id);
+                    if (!u?.city || !u?.street || !u?.house) continue;
 
-                const newStatus = data?.current?.status ?? "UNKNOWN";
-                const prevStatus = u?.lastStatus ?? null;
+                    const data = await fetchStatusBasic(browser, {
+                        city: u.city,
+                        street: u.street,
+                        house: u.house,
+                    });
 
-                checked++;
+                    const newStatus = data?.current?.status ?? "UNKNOWN";
+                    const prevStatus = u?.lastStatus ?? null;
 
-                const nowIso = new Date().toISOString();
-                const changed = prevStatus !== newStatus;
+                    checked++;
 
-                const nextUser = {
-                    ...u,
-                    groupName: data?.groupName ?? u?.groupName ?? null,
-                    lastStatus: newStatus,
-                    lastCheckedAt: nowIso,
-                    ...(changed ? { lastStatusChangedAt: nowIso } : {}),
-                    ...(changed && newStatus === "ON" ? { lastOnAt: nowIso } : {}),
-                    ...(changed && newStatus === "OFF" ? { lastOffAt: nowIso } : {}),
-                };
+                    const nowIso = new Date().toISOString();
+                    const changed = prevStatus !== newStatus;
 
-                await saveUser(id, nextUser);
+                    const nextUser = {
+                        ...u,
+                        groupName: data?.groupName ?? u?.groupName ?? null,
+                        lastStatus: newStatus,
+                        lastCheckedAt: nowIso,
+                        ...(changed ? { lastStatusChangedAt: nowIso } : {}),
+                        ...(changed && newStatus === "ON" ? { lastOnAt: nowIso } : {}),
+                        ...(changed && newStatus === "OFF" ? { lastOffAt: nowIso } : {}),
+                    };
 
-                if (changed) {
-                    updated++;
+                    await saveUser(id, nextUser);
 
-                    // Не спамимо, якщо статус невідомий
-                    if (bot && newStatus !== "UNKNOWN") {
-                        const msg = formatStatusMessage({ data, user: nextUser });
-                        await bot.telegram.sendMessage(id, msg);
+                    if (changed) {
+                        updated++;
+                        // do not spam if unknown
+                        if (bot && newStatus !== "UNKNOWN") {
+                            const msg = formatStatusMessage({ data, user: nextUser });
+                            await bot.telegram.sendMessage(id, msg);
+                        }
                     }
+                } catch (e) {
+                    errors++;
+                    console.error("cron/check user error", id, e);
                 }
-            } catch (e) {
-                errors++;
-                console.error("cron/check user error", id, e);
             }
+
+            console.log(`[CRON] done total=${total} checked=${checked} updated=${updated} errors=${errors}`);
+        } catch (e) {
+            console.error("/api/cron/check fatal (async)", e);
+        } finally {
+            try { await redis.del("cron:lock"); } catch {}
+            if (browser) await browser.close().catch(() => {});
         }
+    });
 
-        console.log(
-            `[CRON] done total=${total} checked=${checked} updated=${updated} errors=${errors}`
-        );
-
-        res.status(200).json({ ok: true, total, checked, updated, errors });
-    } catch (e) {
-        console.error("/api/cron/check fatal", e);
-        res.status(500).json({ ok: false, error: String(e?.message || e).slice(0, 200) });
-    } finally {
-        try { await redis.del("cron:lock"); } catch {}
-        if (browser) await browser.close().catch(() => {});
-    }
+    return;
 });
 
 // ======================
