@@ -2,6 +2,11 @@ import { useState, useEffect } from "react";
 import { Container, Button, Card, Badge, Alert, Spinner } from "react-bootstrap";
 import {beautifyDtekHtml} from "./utils/beautifyDtekHtml.js";
 
+// API base:
+// - In production (Render static site), set VITE_API_BASE_URL to your server URL
+// - In local dev, it falls back to http://localhost:3001
+const API_BASE = (import.meta?.env?.VITE_API_BASE_URL || "http://localhost:3001").replace(/\/$/, "");
+
 function getAddressFromUrl() {
     const p = new URLSearchParams(window.location.search);
     const city = (p.get("city") || "").trim();
@@ -35,29 +40,28 @@ export default function App() {
         try {
             const a = getAddressFromUrl();
             const url = a.hasAll
-                ? `http://localhost:3001/api/status?${new URLSearchParams({
+                ? `${API_BASE}/api/status?${new URLSearchParams({
                     city: a.city,
                     street: a.street,
                     house: a.house,
                 }).toString()}`
-                : "http://localhost:3001/api/status";
+                : `${API_BASE}/api/status`;
 
             const r = await fetch(url);
             const j = await r.json();
             if (!r.ok) throw new Error(j?.error || "API error");
             setData(j);
         } catch (e) {
-            setErr(String(e));
+            setErr(`${String(e)}\n\nAPI: ${API_BASE}`);
         } finally {
             setLoading(false);
         }
     };
 
     useEffect(() => {
-        if (addr.hasAll) {
-            check();
-        }
-    }, []);
+        if (addr.hasAll) check();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [addr.city, addr.street, addr.house]);
 
     const currentStatus = data?.current?.status ?? "UNKNOWN";
 
