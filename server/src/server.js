@@ -259,7 +259,7 @@ function formatStatusMessage({ data, user }) {
 // ======================
 // 2️⃣ PLAYWRIGHT: one function for API + cron
 // ======================
-async function fetchStatusBasic({ city, street, house }) {
+async function fetchStatusBasic(browser, { city, street, house }) {
     const c = String(city ?? "").trim();
     const s = String(street ?? "").trim();
     const h = String(house ?? "").trim();
@@ -267,10 +267,9 @@ async function fetchStatusBasic({ city, street, house }) {
     if (!DTEK_URL) throw new Error("DTEK_URL is not set");
     if (!c || !s || !h) throw new Error("Missing address: city, street, house");
 
-    let browser;
+    let page;
     try {
-        browser = await chromium.launch({ headless: true });
-        const page = await browser.newPage();
+        page = await browser.newPage();
 
         await page.goto(DTEK_URL, { waitUntil: "domcontentloaded", timeout: 45000 });
         await closeModal(page);
@@ -295,11 +294,11 @@ async function fetchStatusBasic({ city, street, house }) {
             resolvedAddress,
         };
     } finally {
-        if (browser) await browser.close().catch(() => {});
+        if (page) await page.close().catch(() => {});
     }
 }
 
-async function fetchStatusWithTables({ city, street, house }) {
+async function fetchStatusWithTables(browser, { city, street, house }) {
     const c = String(city ?? "").trim();
     const s = String(street ?? "").trim();
     const h = String(house ?? "").trim();
@@ -307,10 +306,9 @@ async function fetchStatusWithTables({ city, street, house }) {
     if (!DTEK_URL) throw new Error("DTEK_URL is not set");
     if (!c || !s || !h) throw new Error("Missing address: city, street, house");
 
-    let browser;
+    let page;
     try {
-        browser = await chromium.launch({ headless: true });
-        const page = await browser.newPage();
+        page = await browser.newPage();
 
         await page.goto(DTEK_URL, { waitUntil: "domcontentloaded", timeout: 45000 });
 
@@ -369,7 +367,7 @@ async function fetchStatusWithTables({ city, street, house }) {
             resolvedAddress,
         };
     } finally {
-        if (browser) await browser.close().catch(() => {});
+        if (page) await page.close().catch(() => {});
     }
 }
 
@@ -463,7 +461,10 @@ async function readWeekSchedule(page) {
 
 
 app.get("/api/status", async (req, res) => {
+    let browser;
     try {
+        browser = await chromium.launch({ headless: true });
+
         const city = String(req.query.city ?? CITY ?? "").trim();
         const street = String(req.query.street ?? STREET ?? "").trim();
         const house = String(req.query.house ?? HOUSE ?? "").trim();
@@ -474,11 +475,13 @@ app.get("/api/status", async (req, res) => {
             });
         }
 
-        const data = await fetchStatusWithTables({ city, street, house });
+        const data = await fetchStatusWithTables(browser, { city, street, house });
         res.json(data);
     } catch (e) {
         console.error("/api/status error", e);
         res.status(500).json({ error: String(e?.message || e) });
+    } finally {
+        if (browser) await browser.close().catch(() => {});
     }
 });
 
@@ -497,14 +500,17 @@ app.post("/api/cron/ping", (req, res) => {
 // 🔁 CRON check endpoint
 // ======================
 app.post("/api/cron/check", async (req, res) => {
+    const secret = req.header("x-cron-secret");
+    if (!process.env.CRON_SECRET || secret !== process.env.CRON_SECRET) {
+        return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    let browser;
     try {
         console.log(
             `[CRON] start ${new Date().toISOString()}`
         );
-        const secret = req.header("x-cron-secret");
-        if (!process.env.CRON_SECRET || secret !== process.env.CRON_SECRET) {
-            return res.status(401).json({ error: "Unauthorized" });
-        }
+        browser = await chromium.launch({ headless: true });
 
         const chatIds = await redis.smembers(USERS_SET);
 
@@ -519,7 +525,7 @@ app.post("/api/cron/check", async (req, res) => {
                 const u = await getUser(id);
                 if (!u?.city || !u?.street || !u?.house) continue;
 
-                const data = await fetchStatusBasic({
+                const data = await fetchStatusBasic(browser, {
                     city: u.city,
                     street: u.street,
                     house: u.house,
@@ -568,6 +574,8 @@ app.post("/api/cron/check", async (req, res) => {
     } catch (e) {
         console.error("/api/cron/check fatal", e);
         res.status(500).json({ ok: false, error: String(e?.message || e).slice(0, 200) });
+    } finally {
+        if (browser) await browser.close().catch(() => {});
     }
 });
 
@@ -672,6 +680,7 @@ if (bot) {
             return ctx.reply("Спочатку налаштуй адресу: /setup");
         }
 
+        let browser;
         try {
             let data;
             let nextUser = { ...u };
@@ -693,8 +702,9 @@ if (bot) {
             // 🔴 Якщо ще не було перевірки — робимо реальний запит
             else {
                 await ctx.reply("⏳ Перевіряю статус, зачекай 15–20 сек...");
+                browser = await chromium.launch({ headless: true });
 
-                data = await fetchStatusBasic({
+                data = await fetchStatusBasic(browser, {
                     city: u.city,
                     street: u.street,
                     house: u.house,
@@ -724,6 +734,8 @@ if (bot) {
                 "❌ Не вдалось отримати статус з сайту ДТЕК.\n" +
                 "Спробуй ще раз через 1–2 хв."
             );
+        } finally {
+            if (browser) await browser.close().catch(() => {});
         }
     });
 
